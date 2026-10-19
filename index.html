@@ -684,8 +684,13 @@ function nearestPointOnTrackCoords(pt, coords){
   return best;
 }
 function snapToNearestTrack(lat, lon, maxDistM){
+  // أقرب نقطة بين: RAIL_LINES (المرسومة) + المسارات الرسمية + مسارات OSM المحمّلة
   const pt=[lat,lon];
   let best=null;
+  if(typeof kz_nearestOnTrackRLPoint==='function' && typeof RAIL_LINES!=='undefined' && RAIL_LINES.length){
+    const q = kz_nearestOnTrackRLPoint(lat, lon, null);
+    if(q) best={dist:q.dist, lat:q.lat, lon:q.lon};
+  }
   allTrackLists().forEach(track=>{
     const r = nearestPointOnTrackCoords(pt, track.coords);
     if(r && (!best || r.dist<best.dist)) best=r;
@@ -841,6 +846,24 @@ function trainPositionNowRaw(train){
     const t0=times[i].getTime(), t1=times[i+1].getTime();
     if(t>=t0 && t<=t1){
       const frac = t1===t0 ? 0 : (t-t0)/(t1-t0);
+      // السير على منحنى السكة الفعلي بين المحطتين بدل الخط المستقيم
+      try{
+        const sp = kz_getTrackSubPath([stops[i].lat,stops[i].lon],[stops[i+1].lat,stops[i+1].lon],stops[i].name,stops[i+1].name);
+        if(sp && sp.length>1){
+          const full=[[stops[i].lat,stops[i].lon]].concat(sp,[[stops[i+1].lat,stops[i+1].lon]]);
+          let tot=0; const seg=[];
+          for(let k=0;k<full.length-1;k++){ const d=haversineTN(full[k],full[k+1]); seg.push(d); tot+=d; }
+          let target=tot*frac, acc=0;
+          for(let k=0;k<seg.length;k++){
+            if(acc+seg[k]>=target || k===seg.length-1){
+              const f = seg[k]===0 ? 0 : Math.min(1,Math.max(0,(target-acc)/seg[k]));
+              return {lat: full[k][0]+(full[k+1][0]-full[k][0])*f, lon: full[k][1]+(full[k+1][1]-full[k][1])*f,
+                fromStation: stops[i].name, toStation: stops[i+1].name, delayMin};
+            }
+            acc+=seg[k];
+          }
+        }
+      }catch(e){}
       return {
         lat: stops[i].lat + (stops[i+1].lat-stops[i].lat)*frac,
         lon: stops[i].lon + (stops[i+1].lon-stops[i].lon)*frac,
@@ -930,7 +953,7 @@ function inService(t){
   return now>=a-INACTIVE_MARGIN*60000 && now<=b+(d+INACTIVE_MARGIN)*60000;
 }
 return {
-  RAIL_LINES:RAIL_LINES, haversine:haversine, THR:RISK_THRESHOLD_M,
+  OFFICIAL:SNCFT_OFFICIAL_TRACKS, setOsm:function(a){ osmTracks=Array.isArray(a)?a:[]; }, RAIL_LINES:RAIL_LINES, haversine:haversine, THR:RISK_THRESHOLD_M,
   setLive:function(data){ liveTrains=Array.isArray(data)?data:[]; liveFetchOk=true; liveFetchAt=Date.now(); updateLiveOnlyHistory(); },
   setLiveFailed:function(){ liveFetchOk=false; },
   scheduled:function(){ var out=[]; trains.forEach(function(t){ if(!inService(t)) return; var p=trainPositionNow(t); if(!p) return; out.push({t:t,p:p,confirmed:isTrainLiveConfirmed(t)}); }); return out; },
@@ -945,7 +968,33 @@ var sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_
 var satOn=false;
 document.getElementById('sat').onclick=function(){ if(satOn){map.removeLayer(sat);street.addTo(map);}else{map.removeLayer(street);sat.addTo(map);} satOn=!satOn; };
 QT.RAIL_LINES.forEach(function(l){ L.polyline(l.pts,{color:'#111',weight:3,opacity:.85}).addTo(map); });
-var layer=L.layerGroup().addTo(map), trainLayer=L.layerGroup().addTo(map), riskLayer=L.layerGroup().addTo(map), fitted=false, lastUsers=[], lastTrainPts=[], usersMap={}, userMarkers={}, MAX_LIVE=2000, rtOpen=false;
+var accLayer=L.layerGroup().addTo(map), userCircles={}, layer=L.layerGroup().addTo(map), trainLayer=L.layerGroup().addTo(map), riskLayer=L.layerGroup().addTo(map), fitted=false, lastUsers=[], lastTrainPts=[], usersMap={}, userMarkers={}, MAX_LIVE=2000, rtOpen=false;
+/* ===== مسارات السكة من OSM (Overpass) لكامل تونس، مع تخزين محلي أسبوعاً — نفس مصدر Qitari لكن للبلاد كلها ===== */
+var osmLayer=L.layerGroup().addTo(map), osmRenderer=L.canvas();
+function applyOsm(tracks){
+  QT.setOsm(tracks);
+  osmLayer.clearLayers();
+  tracks.forEach(function(t){ L.polyline(t.coords,{color:'#111',weight:2.5,opacity:.8,renderer:osmRenderer,interactive:false}).addTo(osmLayer); });
+  drawTrains();
+}
+async function loadOsm(){
+  var KEY='qitari_carte_osm_v1', cached=null;
+  try{ cached=JSON.parse(localStorage.getItem(KEY)||'null'); }catch(e){}
+  if(cached&&cached.tracks&&cached.tracks.length) applyOsm(cached.tracks);
+  if(cached&&cached.t&&Date.now()-cached.t<7*864e5&&cached.tracks&&cached.tracks.length) return;
+  try{
+    var q='[out:json][timeout:90];area["ISO3166-1"="TN"]->.a;way["railway"="rail"](area.a);out geom qt;';
+    var r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:q});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    var d=await r.json();
+    var tracks=(d.elements||[]).filter(function(e){return e.geometry&&e.geometry.length>1}).map(function(e){
+      return {id:'osm'+e.id,name:(e.tags&&(e.tags.name||e.tags['name:ar']))||'سكة',coords:e.geometry.map(function(g){return [Math.round(g.lat*1e5)/1e5,Math.round(g.lon*1e5)/1e5]})};
+    });
+    if(!tracks.length) throw new Error('vide');
+    applyOsm(tracks);
+    try{ localStorage.setItem(KEY,JSON.stringify({t:Date.now(),tracks:tracks})); }catch(e){}
+  }catch(e){ console.warn('OSM rails',e); }
+}
 function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]});}
 async function loadUsers(){
   var st=document.getElementById('st');
@@ -1027,6 +1076,12 @@ function computeRisks(){
     var pop='<b>'+esc(u.device)+'</b><br>'+esc(u.os)+' · '+esc(u.browser)+'<br>'+esc(u.lat.toFixed(6))+', '+esc(u.lon.toFixed(6))+
       '<br>±'+esc(u.accuracy==null?'?':Math.round(u.accuracy))+' م · '+(u.speed?(u.speed*3.6).toFixed(1):'0')+' كم/سا<br>'+(age<90?Math.round(age)+' ث':Math.round(age/60)+' د')+
       '<br><b>'+pct+'%</b>'+(alarm?' 🔔':'')+'<br><small>'+esc(u.device_id)+'</small>';
+    /* دائرة دقة GPS الفعلية للمستخدم (accuracy بالأمتار) */
+    var acc=(u.accuracy!=null&&isFinite(u.accuracy))?Math.max(3,+u.accuracy):0, c=userCircles[key];
+    if(acc>0){
+      if(!c){ c=L.circle([u.lat,u.lon],{radius:acc,color:'#0a5fff',weight:1,fillColor:'#0a5fff',fillOpacity:.12,interactive:false}).addTo(accLayer); userCircles[key]=c; }
+      else { c.setLatLng([u.lat,u.lon]); c.setRadius(acc); }
+    } else if(c){ accLayer.removeLayer(c); delete userCircles[key]; }
     var m=userMarkers[key];
     if(!m){
       m=L.marker([u.lat,u.lon],{icon:L.divIcon({className:'',html:html,iconSize:[38,38],iconAnchor:[19,19]}),zIndexOffset:1000}).addTo(layer).bindPopup(pop);
@@ -1038,6 +1093,7 @@ function computeRisks(){
     }
   });
   Object.keys(userMarkers).forEach(function(k){ if(!alive[k]){ layer.removeLayer(userMarkers[k]); delete userMarkers[k]; } });
+  Object.keys(userCircles).forEach(function(k){ if(!alive[k]){ accLayer.removeLayer(userCircles[k]); delete userCircles[k]; } });
   list.sort(function(x,y){return y.pct-x.pct});
   list.forEach(function(r){ if(!r.pb) return; L.polyline([r.pa,r.pb],{color:'#ff2d2d',weight:4,dashArray:'6 6'}).addTo(riskLayer).bindTooltip(r.pct+'%',{permanent:true,className:'train-label'}); });
   var el=document.getElementById('risk');
@@ -1072,7 +1128,7 @@ function connectRealtime(){
   ws.onerror=function(){ try{ ws.close(); }catch(e){} };
 }
 document.getElementById('win').onchange=function(){ loadUsers(); };
-loadUsers(); loadTrains(); connectRealtime();
+loadUsers(); loadTrains(); connectRealtime(); loadOsm();
 /* احتياط: إن لم يعمل البث المباشر نعود للجلب كل 5 ث، وإلا مزامنة كل 60 ث فقط */
 setInterval(function(){ if(!rtOpen) loadUsers(); },5000);
 setInterval(function(){ if(rtOpen) loadUsers(); },60000);
