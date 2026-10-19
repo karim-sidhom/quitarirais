@@ -23,6 +23,8 @@ html,body{margin:0;height:100%;background:#0d1a6e;font-family:system-ui,sans-ser
 .rc{width:38px;height:38px;border-radius:50%;border:3px solid #fff;color:#fff;font:700 12px/32px system-ui,sans-serif;text-align:center;box-shadow:0 1px 5px #000a}
 .rc.g{background:#1fb35a}.rc.o{background:#f39c12}.rc.r{background:#e02424;animation:rp 1s infinite}
 .rc.stale{opacity:.55}
+.rc.sk{font-size:22px;line-height:32px;animation:skb .6s infinite}
+@keyframes skb{0%,100%{opacity:1;box-shadow:0 0 16px 5px #ff0000}50%{opacity:.25;box-shadow:0 0 0 12px #e0242400}}
 @keyframes rp{0%,100%{box-shadow:0 0 0 0 #e02424aa}50%{box-shadow:0 0 0 12px #e0242400}}
 .risk-panel{position:absolute;left:10px;bottom:10px;z-index:1000;background:#0d1a6eE6;color:#fff;border:1px solid #d4af37;border-radius:10px;padding:8px 12px;font-size:13px;max-width:min(360px,calc(100vw - 40px));max-height:40vh;overflow:auto;direction:rtl}
 .risk-panel b{color:#d4af37}.risk-panel .r{padding:2px 0;border-bottom:1px solid #ffffff22}.risk-panel .hi{color:#ff5a5a;font-weight:700}
@@ -996,6 +998,38 @@ async function loadOsm(){
   }catch(e){ console.warn('OSM rails',e); }
 }
 function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]});}
+/* ===== إنذار « على السكة » : مستخدم على ≤10 م من الخط في 3 قياسات متتالية تمتدّ ≥2 دقيقة → دائرته تصبح حمراء تومض مع 💀 ===== */
+var RAIL_D=10, RAIL_MS=120000, railSt={};
+function railDist(lat,lon){
+  var best=Infinity, k=111320, c=Math.cos(lat*Math.PI/180);
+  QT.RAIL_LINES.forEach(function(l){
+    var p=l.pts;
+    for(var i=0;i<p.length-1;i++){
+      var ax=(p[i][1]-lon)*k*c, ay=(p[i][0]-lat)*k, bx=(p[i+1][1]-lon)*k*c, by=(p[i+1][0]-lat)*k;
+      var dx=bx-ax, dy=by-ay, L2=dx*dx+dy*dy, t=L2?Math.max(0,Math.min(1,-(ax*dx+ay*dy)/L2)):0;
+      var px=ax+dx*t, py=ay+dy*t, d=Math.sqrt(px*px+py*py);
+      if(d<best) best=d;
+    }
+  });
+  return best;
+}
+function railFeed(u){
+  if(!u||u.lat==null||u.lon==null||!u.created_at) return;
+  var key=u.device_id||('r'+u.id), t=new Date(u.created_at).getTime();
+  if(!isFinite(t)) return;
+  var s=railSt[key]||(railSt[key]={last:0,start:0,n:0});
+  if(t<=s.last) return;
+  s.last=t;
+  if(railDist(u.lat,u.lon)<=RAIL_D){ if(!s.start){ s.start=t; s.n=1; } else s.n++; }
+  else { s.start=0; s.n=0; }
+}
+function railSeed(rows){
+  rows.slice().sort(function(a,b){return new Date(a.created_at)-new Date(b.created_at)}).forEach(railFeed);
+}
+function railAlarm(key,age){
+  var s=railSt[key];
+  return !!(s && s.start && s.n>=3 && s.last-s.start>=RAIL_MS && age<=180);
+}
 async function loadUsers(){
   var st=document.getElementById('st');
   var mins=+document.getElementById('win').value;
@@ -1004,6 +1038,7 @@ async function loadUsers(){
     var r=await fetch(SUPABASE_URL+'/rest/v1/qitari_users?select=*&created_at=gte.'+encodeURIComponent(since)+'&order=created_at.desc&limit=5000',{headers:{apikey:SUPABASE_KEY}});
     if(!r.ok) throw new Error(r.status);
     var all=await r.json(), seen={}, rows=[];
+    try{ railSeed(all); }catch(e){}
     all.forEach(function(u){ var k=u.device_id||('r'+u.id); if(!seen[k]){seen[k]=1;rows.push(u);} });
     usersMap={};
     rows.slice(0,MAX_LIVE).forEach(function(u){ usersMap[u.device_id||('r'+u.id)]=u; });
@@ -1067,15 +1102,16 @@ function computeRisks(){
     lastTrainPts.forEach(function(t){ var d=QT.haversine([u.lat,u.lon],[t.lat,t.lon]); if(!best||d<best.d) best={d:d,t:t}; });
     /* إنذار Qitari يرنّ عند هذا المستخدم (مُرسَل من تطبيقه نفسه) = 100% أحمر */
     var age=(Date.now()-new Date(u.created_at))/1000;
-    var alarm=(u.alarm===true && age<=180);
+    var skull=railAlarm(key,age);
+    var alarm=((u.alarm===true && age<=180) || skull);
     var pct=alarm?100:((best&&best.d<T)?riskPct(best.d):0);
     var col=alarm?'r':(pct>0?'o':'g');
-    if(alarm) list.push({kind:'u',a:(u.device||'مستخدم'),b:best?best.t.id:'—',d:best?best.d:null,pct:100,alarm:true,pa:[u.lat,u.lon],pb:best?[best.t.lat,best.t.lon]:null});
+    if(alarm) list.push({kind:'u',a:(u.device||'مستخدم'),b:best?best.t.id:'—',d:best?best.d:null,pct:100,alarm:true,sk:skull,pa:[u.lat,u.lon],pb:best?[best.t.lat,best.t.lon]:null});
     else if(pct>0) list.push({kind:'u',a:(u.device||'مستخدم'),b:best.t.id,d:best.d,pct:pct,alarm:false,pa:[u.lat,u.lon],pb:[best.t.lat,best.t.lon]});
-    var html='<div class="rc '+col+(age>180?' stale':'')+'">'+pct+'%</div>';
+    var html=skull?'<div class="rc r sk">💀</div>':'<div class="rc '+col+(age>180?' stale':'')+'">'+pct+'%</div>';
     var pop='<b>'+esc(u.device)+'</b><br>'+esc(u.os)+' · '+esc(u.browser)+'<br>'+esc(u.lat.toFixed(6))+', '+esc(u.lon.toFixed(6))+
       '<br>±'+esc(u.accuracy==null?'?':Math.round(u.accuracy))+' م · '+(u.speed?(u.speed*3.6).toFixed(1):'0')+' كم/سا<br>'+(age<90?Math.round(age)+' ث':Math.round(age/60)+' د')+
-      '<br><b>'+pct+'%</b>'+(alarm?' 🔔':'')+'<br><small>'+esc(u.device_id)+'</small>';
+      '<br><b>'+pct+'%</b>'+(skull?' 💀 ≤10 م / ≥2 د':(alarm?' 🔔':''))+'<br><small>'+esc(u.device_id)+'</small>';
     /* دائرة دقة GPS الفعلية للمستخدم (accuracy بالأمتار) */
     var acc=(u.accuracy!=null&&isFinite(u.accuracy))?Math.max(3,+u.accuracy):0, c=userCircles[key];
     if(acc>0){
@@ -1100,7 +1136,7 @@ function computeRisks(){
   var up=list.filter(function(r){return r.kind==='u'});
   var h='<b>⚠️ نسبة الاصطدام</b>';
   if(!list.length) h+='<div class="r">0% — لا خطر (لا قطار ضمن '+T+' م)</div>';
-  up.forEach(function(r){ h+='<div class="r"><span class="hi">'+r.pct+'%</span> '+(r.alarm?'🔔 ':'')+'👤 '+esc(r.a)+' ↔ 🚆 '+esc(r.b)+(r.d!=null?' · '+Math.round(r.d)+' م':'')+'</div>'; });
+  up.forEach(function(r){ h+='<div class="r"><span class="hi">'+r.pct+'%</span> '+(r.sk?'💀 ':(r.alarm?'🔔 ':''))+'👤 '+esc(r.a)+' ↔ 🚆 '+esc(r.b)+(r.d!=null?' · '+Math.round(r.d)+' م':'')+'</div>'; });
   el.innerHTML=h; el.style.display='block';
 }
 /* ===== مباشر (Supabase Realtime / WebSocket): كل تحديث مستخدم يصل فوراً بلا انتظار ===== */
@@ -1122,6 +1158,7 @@ function connectRealtime(){
     var u=d.record; if(d.type==='DELETE'||u.lat==null||u.lon==null) return;
     if(!u.created_at) u.created_at=new Date().toISOString();
     usersMap[u.device_id||('r'+u.id)]=u;
+    try{ railFeed(u); }catch(e){}
     scheduleRisks();
   };
   ws.onclose=function(){ rtOpen=false; if(hb) clearInterval(hb); setTimeout(connectRealtime,3000); };
