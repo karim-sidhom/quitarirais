@@ -945,7 +945,7 @@ var sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_
 var satOn=false;
 document.getElementById('sat').onclick=function(){ if(satOn){map.removeLayer(sat);street.addTo(map);}else{map.removeLayer(street);sat.addTo(map);} satOn=!satOn; };
 QT.RAIL_LINES.forEach(function(l){ L.polyline(l.pts,{color:'#111',weight:3,opacity:.85}).addTo(map); });
-var layer=L.layerGroup().addTo(map), trainLayer=L.layerGroup().addTo(map), riskLayer=L.layerGroup().addTo(map), fitted=false, lastUsers=[], lastTrainPts=[];
+var layer=L.layerGroup().addTo(map), trainLayer=L.layerGroup().addTo(map), riskLayer=L.layerGroup().addTo(map), fitted=false, lastUsers=[], lastTrainPts=[], usersMap={}, userMarkers={}, MAX_LIVE=2000, rtOpen=false;
 function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]});}
 async function loadUsers(){
   var st=document.getElementById('st');
@@ -956,8 +956,10 @@ async function loadUsers(){
     if(!r.ok) throw new Error(r.status);
     var all=await r.json(), seen={}, rows=[];
     all.forEach(function(u){ var k=u.device_id||('r'+u.id); if(!seen[k]){seen[k]=1;rows.push(u);} });
-    lastUsers=rows.filter(function(u){return u.lat!=null&&u.lon!=null});
-    document.getElementById('cnt').textContent=rows.length;
+    usersMap={};
+    rows.slice(0,MAX_LIVE).forEach(function(u){ usersMap[u.device_id||('r'+u.id)]=u; });
+    lastUsers=rows.filter(function(u){return u.lat!=null&&u.lon!=null}).slice(0,MAX_LIVE);
+    document.getElementById('cnt').textContent=Math.min(rows.length,MAX_LIVE);
     var pts=rows.filter(function(u){return u.lat!=null&&u.lon!=null}).map(function(u){return [u.lat,u.lon]});
     if(!fitted&&pts.length){ map.fitBounds(L.latLngBounds(pts).pad(0.3),{maxZoom:14}); fitted=true; }
     st.textContent='';
@@ -994,11 +996,24 @@ function drawTrains(){
 }
 /* ===== نسبة الاصطدام: نفس صيغة Qitari بالضبط: max(0, 1 - المسافة/150م) × 100 ===== */
 function riskPct(d){ return Math.round(Math.max(0,1-d/QT.THR)*100); }
+function rebuildLastUsers(){
+  var mins=+document.getElementById('win').value, lim=Date.now()-mins*60000, arr=[];
+  Object.keys(usersMap).forEach(function(k){
+    var u=usersMap[k];
+    if(new Date(u.created_at).getTime()<lim){ delete usersMap[k]; return; }
+    if(u.lat!=null&&u.lon!=null) arr.push(u);
+  });
+  arr.sort(function(x,y){return new Date(y.created_at)-new Date(x.created_at)});
+  if(arr.length>MAX_LIVE){ arr.slice(MAX_LIVE).forEach(function(u){ delete usersMap[u.device_id||('r'+u.id)]; }); arr=arr.slice(0,MAX_LIVE); }
+  lastUsers=arr;
+  document.getElementById('cnt').textContent=Object.keys(usersMap).length;
+}
 function computeRisks(){
   riskLayer.clearLayers();
-  var list=[], T=QT.THR;
-  layer.clearLayers();
+  var list=[], T=QT.THR, alive={};
+  rebuildLastUsers();
   lastUsers.forEach(function(u){
+    var key=u.device_id||('r'+u.id); alive[key]=1;
     var best=null;
     lastTrainPts.forEach(function(t){ var d=QT.haversine([u.lat,u.lon],[t.lat,t.lon]); if(!best||d<best.d) best={d:d,t:t}; });
     /* إنذار Qitari يرنّ عند هذا المستخدم (مُرسَل من تطبيقه نفسه) = 100% أحمر */
@@ -1008,12 +1023,21 @@ function computeRisks(){
     var col=alarm?'r':(pct>0?'o':'g');
     if(alarm) list.push({kind:'u',a:(u.device||'مستخدم'),b:best?best.t.id:'—',d:best?best.d:null,pct:100,alarm:true,pa:[u.lat,u.lon],pb:best?[best.t.lat,best.t.lon]:null});
     else if(pct>0) list.push({kind:'u',a:(u.device||'مستخدم'),b:best.t.id,d:best.d,pct:pct,alarm:false,pa:[u.lat,u.lon],pb:[best.t.lat,best.t.lon]});
-    var ic=L.divIcon({className:'',html:'<div class="rc '+col+(age>180?' stale':'')+'">'+pct+'%</div>',iconSize:[38,38],iconAnchor:[19,19]});
-    L.marker([u.lat,u.lon],{icon:ic,zIndexOffset:1000}).addTo(layer).bindPopup(
-      '<b>'+esc(u.device)+'</b><br>'+esc(u.os)+' · '+esc(u.browser)+'<br>'+esc(u.lat.toFixed(6))+', '+esc(u.lon.toFixed(6))+
+    var html='<div class="rc '+col+(age>180?' stale':'')+'">'+pct+'%</div>';
+    var pop='<b>'+esc(u.device)+'</b><br>'+esc(u.os)+' · '+esc(u.browser)+'<br>'+esc(u.lat.toFixed(6))+', '+esc(u.lon.toFixed(6))+
       '<br>±'+esc(u.accuracy==null?'?':Math.round(u.accuracy))+' م · '+(u.speed?(u.speed*3.6).toFixed(1):'0')+' كم/سا<br>'+(age<90?Math.round(age)+' ث':Math.round(age/60)+' د')+
-      '<br><b>'+pct+'%</b>'+(alarm?' 🔔':'')+'<br><small>'+esc(u.device_id)+'</small>');
+      '<br><b>'+pct+'%</b>'+(alarm?' 🔔':'')+'<br><small>'+esc(u.device_id)+'</small>';
+    var m=userMarkers[key];
+    if(!m){
+      m=L.marker([u.lat,u.lon],{icon:L.divIcon({className:'',html:html,iconSize:[38,38],iconAnchor:[19,19]}),zIndexOffset:1000}).addTo(layer).bindPopup(pop);
+      m._html=html; userMarkers[key]=m;
+    } else {
+      m.setLatLng([u.lat,u.lon]);
+      if(m._html!==html){ m.setIcon(L.divIcon({className:'',html:html,iconSize:[38,38],iconAnchor:[19,19]})); m._html=html; }
+      if(m.isPopupOpen&&m.isPopupOpen()) m.setPopupContent(pop); else m.getPopup().setContent(pop);
+    }
   });
+  Object.keys(userMarkers).forEach(function(k){ if(!alive[k]){ layer.removeLayer(userMarkers[k]); delete userMarkers[k]; } });
   list.sort(function(x,y){return y.pct-x.pct});
   list.forEach(function(r){ if(!r.pb) return; L.polyline([r.pa,r.pb],{color:'#ff2d2d',weight:4,dashArray:'6 6'}).addTo(riskLayer).bindTooltip(r.pct+'%',{permanent:true,className:'train-label'}); });
   var el=document.getElementById('risk');
@@ -1023,9 +1047,37 @@ function computeRisks(){
   up.forEach(function(r){ h+='<div class="r"><span class="hi">'+r.pct+'%</span> '+(r.alarm?'🔔 ':'')+'👤 '+esc(r.a)+' ↔ 🚆 '+esc(r.b)+(r.d!=null?' · '+Math.round(r.d)+' م':'')+'</div>'; });
   el.innerHTML=h; el.style.display='block';
 }
-document.getElementById('win').onchange=loadUsers;
-loadUsers(); loadTrains();
-setInterval(loadUsers,10000); setInterval(loadTrains,15000);
+/* ===== مباشر (Supabase Realtime / WebSocket): كل تحديث مستخدم يصل فوراً بلا انتظار ===== */
+var rtTimer=null, rtDirty=false;
+function scheduleRisks(){ if(rtTimer) return; rtTimer=setTimeout(function(){ rtTimer=null; computeRisks(); },300); }
+function connectRealtime(){
+  var ws;
+  try{ ws=new WebSocket(SUPABASE_URL.replace('https://','wss://')+'/realtime/v1/websocket?apikey='+SUPABASE_KEY+'&vsn=1.0.0'); }catch(e){ setTimeout(connectRealtime,5000); return; }
+  var hb=null;
+  ws.onopen=function(){
+    ws.send(JSON.stringify({topic:'realtime:public:qitari_users',event:'phx_join',ref:'1',payload:{config:{postgres_changes:[{event:'*',schema:'public',table:'qitari_users'}]}}}));
+    hb=setInterval(function(){ if(ws.readyState===1) ws.send(JSON.stringify({topic:'phoenix',event:'heartbeat',payload:{},ref:'hb'})); },25000);
+  };
+  ws.onmessage=function(ev){
+    var m; try{ m=JSON.parse(ev.data); }catch(e){ return; }
+    if(m.event==='phx_reply' && m.ref==='1'){ rtOpen=(m.payload&&m.payload.status==='ok'); return; }
+    if(m.event!=='postgres_changes') return;
+    var d=m.payload&&m.payload.data; if(!d||!d.record) return;
+    var u=d.record; if(d.type==='DELETE'||u.lat==null||u.lon==null) return;
+    if(!u.created_at) u.created_at=new Date().toISOString();
+    usersMap[u.device_id||('r'+u.id)]=u;
+    scheduleRisks();
+  };
+  ws.onclose=function(){ rtOpen=false; if(hb) clearInterval(hb); setTimeout(connectRealtime,3000); };
+  ws.onerror=function(){ try{ ws.close(); }catch(e){} };
+}
+document.getElementById('win').onchange=function(){ loadUsers(); };
+loadUsers(); loadTrains(); connectRealtime();
+/* احتياط: إن لم يعمل البث المباشر نعود للجلب كل 5 ث، وإلا مزامنة كل 60 ث فقط */
+setInterval(function(){ if(!rtOpen) loadUsers(); },5000);
+setInterval(function(){ if(rtOpen) loadUsers(); },60000);
+setInterval(scheduleRisks,5000);
+setInterval(loadTrains,15000);
 /* ===== PWA: service worker (نفس أسلوب Qitari: network-first) ===== */
 if('serviceWorker' in navigator){
   try{
