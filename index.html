@@ -970,14 +970,14 @@ var street=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{max
 var sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Esri'});
 var satOn=false;
 document.getElementById('sat').onclick=function(){ if(satOn){map.removeLayer(sat);street.addTo(map);}else{map.removeLayer(street);sat.addTo(map);} satOn=!satOn; };
-QT.RAIL_LINES.forEach(function(l){ L.polyline(l.pts,{color:'#111',weight:3,opacity:.85}).addTo(map); });
+QT.RAIL_LINES.forEach(function(l){ L.polyline(l.pts,{color:'#1a1a1a',weight:6,opacity:.95,lineCap:'butt'}).addTo(map); L.polyline(l.pts,{color:'#ffffff',weight:3,opacity:1,dashArray:'9 9',lineCap:'butt'}).addTo(map); });
 var accLayer=L.layerGroup().addTo(map), userCircles={}, layer=L.layerGroup().addTo(map), trainLayer=L.layerGroup().addTo(map), riskLayer=L.layerGroup().addTo(map), fitted=false, lastUsers=[], lastTrainPts=[], usersMap={}, userMarkers={}, MAX_LIVE=2000, rtOpen=false;
 /* ===== مسارات السكة من OSM (Overpass) لكامل تونس، مع تخزين محلي أسبوعاً — نفس مصدر Qitari لكن للبلاد كلها ===== */
 var osmLayer=L.layerGroup().addTo(map), osmRenderer=L.canvas();
 function applyOsm(tracks){
   QT.setOsm(tracks);
   osmLayer.clearLayers();
-  tracks.forEach(function(t){ L.polyline(t.coords,{color:'#111',weight:2.5,opacity:.8,renderer:osmRenderer,interactive:false}).addTo(osmLayer); });
+  tracks.forEach(function(t){ L.polyline(t.coords,{color:'#1a1a1a',weight:6,opacity:.95,lineCap:'butt',renderer:osmRenderer,interactive:false}).addTo(osmLayer); L.polyline(t.coords,{color:'#ffffff',weight:3,opacity:1,dashArray:'9 9',lineCap:'butt',renderer:osmRenderer,interactive:false}).addTo(osmLayer); });
   drawTrains();
 }
 async function loadOsm(){
