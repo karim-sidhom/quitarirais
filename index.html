@@ -989,9 +989,10 @@ return {
   OFFICIAL:SNCFT_OFFICIAL_TRACKS, setOsm:function(a){ osmTracks=Array.isArray(a)?a:[]; }, RAIL_LINES:RAIL_LINES, haversine:haversine, THR:RISK_THRESHOLD_M,
   setLive:function(data){ liveTrains=Array.isArray(data)?data:[]; liveFetchOk=true; liveFetchAt=Date.now(); updateLiveOnlyHistory(); },
   setLiveFailed:function(){ liveFetchOk=false; },
-  scheduled:function(){ var out=[]; trains.forEach(function(t){ if(!inService(t)) return; var p=trainPositionNow(t); if(!p) return; out.push({t:t,p:p,confirmed:isTrainLiveConfirmed(t)}); }); return out; },
+  scheduled:function(){ var out=[]; trains.forEach(function(t){ if(!inService(t)) return; var p=trainPositionNow(t); if(!p) return; var st=parseStops(t.stopsText); out.push({t:t,p:p,confirmed:isTrainLiveConfirmed(t),from:st[0].name,to:st[st.length-1].name}); }); return out; },
   liveOnly:function(){ var out=[]; liveOnlyEntries().forEach(function(lt){ var p=liveOnlyTrainPosition(lt); if(p) out.push({lt:lt,p:p}); }); return out; },
   icon:trainIconSvg,
+  stationDist:function(name,lat,lon){ var c=resolveStationCoord(name); return c?haversine([lat,lon],c):null; },
   liveUrl:SNCFT_LIVE_URL
 };
 })();
@@ -1027,6 +1028,16 @@ async function loadOsm(){
     applyOsm(tracks);
     try{ localStorage.setItem(KEY,JSON.stringify({t:Date.now(),tracks:tracks})); }catch(e){}
   }catch(e){ console.warn('OSM rails',e); }
+}
+function stDistHtml(p){
+  function f(n){ var d=QT.stationDist(n,p.lat,p.lon); if(d==null) return esc(n); return esc(n)+' ('+(d<1000?Math.round(d)+' م':(d/1000).toFixed(1)+' كم')+')'; }
+  if(!p.fromStation) return '';
+  if(p.fromStation===p.toStation) return '<br>📍 '+f(p.fromStation);
+  return '<br>📍 '+f(p.fromStation)+' → '+f(p.toStation);
+}
+function statusHtml(p){
+  var d=+p.delayMin||0;
+  return d>0?'<br>⏱ <b style="color:#e02424">متأخر '+d+' د (en retard)</b>':'<br>✅ <b style="color:#1fb35a">في الوقت (à l\'heure)</b>';
 }
 function esc(t){return String(t==null?'':t).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]});}
 /* ===== إنذار « على السكة » : مستخدم على ≤10 م من الخط في 3 قياسات متتالية تمتدّ ≥2 دقيقة → دائرته تصبح حمراء تومض مع 💀 ===== */
@@ -1097,14 +1108,14 @@ function drawTrains(){
     var num=x.t.name.split('—')[0].trim();
     L.marker([x.p.lat,x.p.lon],{icon:ic}).addTo(trainLayer)
       .bindTooltip(num,{permanent:true,direction:'top',offset:[0,-26],className:'train-label'})
-      .bindPopup('<b>'+esc(x.t.name)+'</b><br>'+esc(x.p.fromStation)+' → '+esc(x.p.toStation)+(x.p.delayMin?'<br>+'+x.p.delayMin+' د':'')+'<br>'+(x.confirmed?'✅ SNCFT Live':'⏳ الجدول فقط'));
+      .bindPopup('<b>'+esc(x.t.name)+'</b>'+'<br>🚆 '+esc(x.from)+' → '+esc(x.to)+stDistHtml(x.p)+statusHtml(x.p)+'<br>'+(x.confirmed?'✅ SNCFT Live':'⏳ الجدول فقط'));
   });
   QT.liveOnly().forEach(function(x){
     n++; lastTrainPts.push({id:'🔵 '+x.lt.num,lat:x.p.lat,lon:x.p.lon});
     var ic=L.divIcon({className:'train-icon-all',html:QT.icon(26,false,'#1e90ff'),iconSize:[104,26],iconAnchor:[52,24]});
     L.marker([x.p.lat,x.p.lon],{icon:ic}).addTo(trainLayer)
       .bindTooltip('🔵 '+esc(x.lt.num),{permanent:true,direction:'top',offset:[0,-26],className:'train-label'})
-      .bindPopup('<b>🔵 '+esc(x.lt.num)+'</b> (SNCFT Live)<br>'+esc(x.p.fromStation)+' → '+esc(x.p.toStation)+(x.p.delayMin?'<br>+'+x.p.delayMin+' د':''));
+      .bindPopup('<b>🔵 '+esc(x.lt.num)+'</b> (SNCFT Live)'+stDistHtml(x.p)+statusHtml(x.p));
   });
   document.getElementById('tcnt').textContent=n;
   computeRisks();
