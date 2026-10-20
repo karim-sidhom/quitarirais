@@ -693,12 +693,11 @@ function snapToNearestTrack(lat, lon, maxDistM){
     const q = kz_nearestOnTrackRLPoint(lat, lon, null);
     if(q) best={dist:q.dist, lat:q.lat, lon:q.lon};
   }
-  allTrackLists().forEach(track=>{
+  osmTracks.forEach(track=>{
     const r = nearestPointOnTrackCoords(pt, track.coords);
     if(r && (!best || r.dist<best.dist)) best=r;
   });
   if(!best) return {lat,lon};
-  if(maxDistM!=null && best.dist>maxDistM) return {lat,lon};
   return {lat:best.lat, lon:best.lon};
 }
 function darkenHex(hex, amt){
@@ -1063,7 +1062,7 @@ function drawTrains(){
   trainLayer.clearLayers(); var n=0; lastTrainPts=[];
   QT.scheduled().forEach(function(x){
     n++; lastTrainPts.push({id:x.t.name.split('—')[0].trim(),lat:x.p.lat,lon:x.p.lon});
-    var ic=L.divIcon({className:'train-icon-all',html:QT.icon(30,false),iconSize:[30,30],iconAnchor:[15,15]});
+    var ic=L.divIcon({className:'train-icon-all',html:QT.icon(30,false),iconSize:[30,30],iconAnchor:[15,22]});
     var num=x.t.name.split('—')[0].trim();
     L.marker([x.p.lat,x.p.lon],{icon:ic}).addTo(trainLayer)
       .bindTooltip(num,{permanent:true,direction:'top',offset:[0,-12],className:'train-label'})
@@ -1071,7 +1070,7 @@ function drawTrains(){
   });
   QT.liveOnly().forEach(function(x){
     n++; lastTrainPts.push({id:'🔵 '+x.lt.num,lat:x.p.lat,lon:x.p.lon});
-    var ic=L.divIcon({className:'train-icon-all',html:QT.icon(30,false,'#1e90ff'),iconSize:[30,30],iconAnchor:[15,15]});
+    var ic=L.divIcon({className:'train-icon-all',html:QT.icon(30,false,'#1e90ff'),iconSize:[30,30],iconAnchor:[15,22]});
     L.marker([x.p.lat,x.p.lon],{icon:ic}).addTo(trainLayer)
       .bindTooltip('🔵 '+esc(x.lt.num),{permanent:true,direction:'top',offset:[0,-12],className:'train-label'})
       .bindPopup('<b>🔵 '+esc(x.lt.num)+'</b> (SNCFT Live)<br>'+esc(x.p.fromStation)+' → '+esc(x.p.toStation)+(x.p.delayMin?'<br>+'+x.p.delayMin+' د':''));
